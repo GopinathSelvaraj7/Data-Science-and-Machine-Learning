@@ -1,0 +1,236 @@
+# Predicting the sale price of bulldozers using Machine learning
+
+## 1. Problem Definition
+
+> How well can we predict the future sale prices of a bulldozer, given its characteristics.
+
+## 2. Data
+
+The data is downloaded from Kaggle Blue Book for Bulldozers : https://www.kaggle.com/c/bluebook-for-bulldozers/data
+
+## 3. Evaluation
+
+The evaluation metric for this competition is the RMSLE (root mean squared log error) between the actual and predicted auction prices.
+
+## 4. Features
+
+Kaggle provides the data dictionary of features of the data set: https://www.kaggle.com/c/bluebook-for-bulldozers/data?
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import sklearn
+
+# import training and validation sets
+df = pd.read_csv("Data/TrainAndValid.csv",low_memory=False)
+
+df.info()
+
+## Parsing dates
+
+When we work with time series data, we want to enrich the time & date component as much as possible.
+We can do that by telling pandas which of our columns has dates in it using 'parse_dates' parameter
+
+# import data again but this time parse dates
+df = pd.read_csv("Data/TrainAndValid.csv",low_memory=False,parse_dates=["saledate"])
+
+df.saledate.dtype
+
+fig, ax = plt.subplots()
+ax.scatter(df["saledate"][:1000],df["SalePrice"][:1000]);
+
+# Sort dateframe by saledate
+Whenever we are about to deal with time series data, its good idea to sort it by date.
+
+df.sort_values(by=["saledate"],inplace=True, ascending=True)
+df.saledate.head(20)
+
+Make a copy of the original dataframe so when we manipulate the copy, we have still got the original data.
+
+df_tmp = df.copy()
+
+## Add datetime parameter for 'sale_date' column
+
+df_tmp["saleYear"] = df_tmp.saledate.dt.year
+df_tmp["saleMonth"] = df_tmp.saledate.dt.month
+df_tmp["saleDay"] = df_tmp.saledate.dt.day
+df_tmp["saleDayOfWeek"] = df_tmp.saledate.dt.dayofweek
+df_tmp["saleDayOfYear"] = df_tmp.saledate.dt.dayofyear
+
+# Now we have enriched our data, we can drop "saledate"
+df_tmp.drop("saledate", axis=1,inplace=True)
+
+## Convert strings to categories
+
+One way to convert our data into numbers is by converting them into pandas categories.
+
+# Find the columns that contains strings
+for label, content in df_tmp.items():
+    if pd.api.types.is_string_dtype(content):
+        print(label)
+
+# This will change all string values to categories
+for label, content in df_tmp.items():
+    if pd.api.types.is_string_dtype(content):
+        df_tmp[label] = content.astype("category").cat.as_ordered()
+
+## Fill the missing values
+
+### Fill the numeric missing values
+
+# Check for which numeric column is null
+for label, content in df_tmp.items():
+    if pd.api.types.is_numeric_dtype(content):
+        if pd.isnull(content).sum():
+            print(label)
+
+# Fill numeric rows with median
+for label, content in df_tmp.items():
+    if pd.api.types.is_numeric_dtype(content):
+        if pd.isnull(content).sum():
+            df_tmp[label+"_is_missing"] = pd.isnull(content)
+            df_tmp[label] = content.fillna(content.median())
+
+### Fill the categorical missing values
+
+# Check for columns which arent numbers
+for label, content in df_tmp.items():
+    if not pd.api.types.is_numeric_dtype(content):
+        print(label)
+
+# Turn categorical variables into numbers and fill them
+for label, content in df_tmp.items():
+    if not pd.api.types.is_numeric_dtype(content):
+        df_tmp[label+"_is_missing"] = pd.isnull(content)
+        df_tmp[label] = pd.Categorical(content).codes + 1
+
+df_tmp.isna().sum()
+
+# 5. Modelling
+
+%%time
+X = df_tmp.drop("SalePrice",axis=1)
+y = df_tmp["SalePrice"]
+
+from sklearn.ensemble import RandomForestRegressor
+
+model = RandomForestRegressor(n_jobs=-1,random_state=42)
+
+model.fit(X,y)
+
+#### Split the data into Training and Validation sets
+
+df_val = df_tmp[df_tmp.saleYear == 2012]
+df_train = df_tmp[df_tmp.saleYear != 2012]
+
+# Split data into X and y
+X_train, y_train = df_train.drop("SalePrice", axis=1), df_train.SalePrice
+X_valid, y_valid = df_val.drop("SalePrice", axis=1), df_val.SalePrice
+
+### Create Evaluation function
+
+from sklearn.metrics import mean_squared_log_error, mean_absolute_error
+
+def rmsle(y_test,y_preds):
+    return np.sqrt(mean_squared_log_error(y_test,y_preds))
+
+def show_scores(model):
+    train_preds = model.predict(X_train)
+    val_preds = model.predict(X_valid)
+    scores = {"Training MAE": mean_absolute_error(y_train,train_preds),
+              "valid MAE": mean_absolute_error(y_valid,val_preds),
+              "Training RMSLE": rmsle(y_train,train_preds),
+              "Valid RMSLE": rmsle(y_valid,val_preds)}
+    return scores
+
+
+Reduce the data as we have 4lack records and it takes time to fit and score
+
+# change max_sample value
+model = RandomForestRegressor(n_jobs=-1,
+                              random_state=42,
+                              max_samples=10000)
+
+%%time
+model.fit(X_train,y_train)
+
+show_scores(model)
+
+### RandomizedSearchCV
+
+%%time
+from sklearn.model_selection import RandomizedSearchCV
+
+grid = {"n_estimators": np.arange(10,100,10),
+        "max_depth": [None, 3,5,10],
+        "min_samples_split": np.arange(2,20,2),
+        "min_samples_leaf": np.arange(2,20,2),
+        "max_samples": [10000],
+        "max_features":[0.5,1,"sqrt","auto"]}
+
+rs_model = RandomizedSearchCV(RandomForestRegressor(n_jobs=-1, random_state=42),
+                            param_distributions=grid,
+                            n_iter=2,
+                            cv=5,
+                            verbose=True)
+
+rs_model.fit(X_train,y_train)
+
+%%time
+ideal_model = RandomForestRegressor(n_estimators=40,
+                                    min_samples_leaf=1,
+                                    min_samples_split=14,
+                                    max_features=0.5,
+                                    n_jobs=-1,
+                                    max_samples=None)
+
+ideal_model.fit(X_train,y_train)
+
+show_scores(ideal_model)
+
+## Make prediction on test data
+
+df_test = pd.read_csv("Data/Test.csv",low_memory=False,parse_dates=["saledate"])
+
+#### Preprocessing the data
+
+def preprocess_data(df):
+    df["saleYear"] = df.saledate.dt.year
+    df["saleMonth"] = df.saledate.dt.month
+    df["saleDay"] = df.saledate.dt.day
+    df["saleDayOfWeek"] = df.saledate.dt.dayofweek
+    df["saleDayOfYear"] = df.saledate.dt.dayofyear
+    
+    df.drop("saledate",axis=1,inplace=True)
+    
+    #fill numeric missing with median
+    for label, content in df.items():
+        if pd.api.types.is_numeric_dtype(content):
+            if pd.isnull(content).sum():
+                df[label+"_is_missing"] = pd.isnull(content)
+                df[label] = content.fillna(content.median())
+            
+    #fill categorical missing with median
+    for label, content in df.items():
+        if not pd.api.types.is_numeric_dtype(content):
+            df[label+"_is_missing"] = pd.isnull(content)
+            df[label] = pd.Categorical(content).codes+1
+            
+    return df
+
+df_test = preprocess_data(df_test)
+
+set(X_train.columns) - set(df_test.columns)
+
+# Manually add a column 'auctioneerID_is_missing'
+df_test["auctioneerID_is_missing"] = False
+
+test_preds = ideal_model.predict(df_test)
+
+df_preds = pd.DataFrame()
+df_preds["SalesID"] = df_test["SalesID"]
+df_preds["SalePrice"] = test_preds
+df_preds
+
+## Feature Importance
+
